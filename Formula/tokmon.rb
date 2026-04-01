@@ -1,8 +1,8 @@
 class Tokmon < Formula
   desc "htop for your AI spend — track tokens, latency, and cost across LLM providers"
   homepage "https://github.com/trgr/tokmon"
-  url "https://github.com/trgr/tokmon/archive/refs/tags/v0.2.0.tar.gz"
-  sha256 "6a0bb870e897168cdff10ef32f00bf97be86d48f3c87424595a542a77b39cae4"
+  url "https://github.com/trgr/tokmon/archive/refs/tags/v0.3.0.tar.gz"
+  sha256 "e5821b700a8c9d543267cd8d609e42d8c3a8b86e12ec8d1923814370903cc138"
   license "MIT"
 
   depends_on "rust" => :build
