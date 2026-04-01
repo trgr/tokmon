@@ -248,6 +248,11 @@ async fn proxy_handler(
         forward = forward.header(name.clone(), value.clone());
     }
 
+    // Explicitly request uncompressed responses — reqwest doesn't have
+    // the gzip feature enabled so we cannot decode compressed bodies.
+    // Without this, the server is free to compress and our parsers silently fail.
+    forward = forward.header("accept-encoding", "identity");
+
     // For OpenAI streaming, inject stream_options.include_usage
     if is_stream && provider == Provider::OpenAI {
         if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
