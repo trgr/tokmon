@@ -73,6 +73,9 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Ensure prices are fetched/cached before any command that needs them
+    pricing::ensure_prices();
+
     match cli.command {
         Commands::Wrap { cmd, label, quiet } => {
             proxy::run_wrap(cmd, label, quiet).await?;

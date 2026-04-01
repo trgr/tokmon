@@ -3,6 +3,90 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+const REMOTE_PRICES_URL: &str =
+    "https://raw.githubusercontent.com/trgr/tokmon/main/prices.json";
+
+/// Ensure a local prices.json exists and is reasonably fresh (< 24h).
+/// Fetches from the remote repo on first run or when stale.
+/// Failures are silent — hardcoded defaults are always available as fallback.
+pub fn ensure_prices() {
+    let path = match prices_path() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    let needs_fetch = if path.exists() {
+        // Stale if older than 24 hours
+        std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .map(|mtime| {
+                mtime.elapsed().unwrap_or_default() > std::time::Duration::from_secs(86400)
+            })
+            .unwrap_or(true)
+    } else {
+        true
+    };
+
+    if needs_fetch {
+        fetch_remote_prices(&path);
+    }
+}
+
+/// Force-fetch prices from remote, ignoring cache age.
+pub fn force_fetch_prices() -> Result<()> {
+    let path = prices_path()?;
+    if fetch_remote_prices(&path) {
+        println!("Prices updated from remote: {}", path.display());
+    } else {
+        // If fetch failed but no local file exists, write defaults
+        if !path.exists() {
+            let config = default_price_config();
+            let json = serde_json::to_string_pretty(&config)?;
+            std::fs::write(&path, json)?;
+            println!("Wrote default prices to: {}", path.display());
+        } else {
+            println!("Fetch failed, keeping existing prices at: {}", path.display());
+        }
+    }
+    println!("Edit this file to customize pricing. Models are matched by prefix/contains.");
+    Ok(())
+}
+
+/// Fetch prices from the remote URL. Returns true on success.
+fn fetch_remote_prices(path: &PathBuf) -> bool {
+    // Use a short timeout so we never block the user for long
+    let result = std::thread::spawn({
+        let path = path.clone();
+        move || -> bool {
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .ok();
+            let client = match client {
+                Some(c) => c,
+                None => return false,
+            };
+            let resp = match client.get(REMOTE_PRICES_URL).send() {
+                Ok(r) if r.status().is_success() => r,
+                _ => return false,
+            };
+            let body = match resp.text() {
+                Ok(t) => t,
+                Err(_) => return false,
+            };
+            // Validate it's valid PriceConfig JSON before writing
+            if serde_json::from_str::<PriceConfig>(&body).is_err() {
+                return false;
+            }
+            std::fs::write(&path, &body).is_ok()
+        }
+    })
+    .join()
+    .unwrap_or(false);
+
+    result
+}
+
 /// A single model's pricing per 1M tokens in USD.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPrice {
@@ -155,28 +239,9 @@ fn default_price_config() -> PriceConfig {
     PriceConfig { models }
 }
 
-/// Write/update the prices config file with current defaults.
+/// Fetch latest prices from remote, or write defaults if offline.
 pub fn update_prices() -> Result<()> {
-    let path = prices_path()?;
-    let config = if path.exists() {
-        // Merge: keep user entries, update defaults
-        let existing = std::fs::read_to_string(&path)?;
-        let mut config: PriceConfig = serde_json::from_str(&existing)
-            .unwrap_or_else(|_| default_price_config());
-        let defaults = default_price_config();
-        for (k, v) in defaults.models {
-            config.models.entry(k).or_insert(v);
-        }
-        config
-    } else {
-        default_price_config()
-    };
-
-    let json = serde_json::to_string_pretty(&config)?;
-    std::fs::write(&path, json)?;
-    println!("Prices written to: {}", path.display());
-    println!("Edit this file to customize pricing. Models are matched by prefix/contains.");
-    Ok(())
+    force_fetch_prices()
 }
 
 /// Print current effective prices.

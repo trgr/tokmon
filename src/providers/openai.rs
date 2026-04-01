@@ -8,8 +8,8 @@ pub fn parse_response(body: &[u8]) -> Option<UsageInfo> {
 
     Some(UsageInfo {
         model: resp.model.unwrap_or_default(),
-        input_tokens: usage.prompt_tokens.unwrap_or(0),
-        output_tokens: usage.completion_tokens.unwrap_or(0),
+        input_tokens: usage.effective_input(),
+        output_tokens: usage.effective_output(),
         cached_tokens: usage
             .prompt_tokens_details
             .and_then(|d| d.cached_tokens)
@@ -43,8 +43,8 @@ pub fn parse_stream_chunks(chunks: &[String]) -> Option<UsageInfo> {
             if let Some(usage) = parsed.usage {
                 last_usage = Some(UsageInfo {
                     model: model.clone(),
-                    input_tokens: usage.prompt_tokens.unwrap_or(0),
-                    output_tokens: usage.completion_tokens.unwrap_or(0),
+                    input_tokens: usage.effective_input(),
+                    output_tokens: usage.effective_output(),
                     cached_tokens: usage
                         .prompt_tokens_details
                         .and_then(|d| d.cached_tokens)
@@ -77,9 +77,22 @@ struct OpenAIStreamChunk {
 
 #[derive(Deserialize)]
 struct OpenAIUsage {
+    // Chat Completions API uses prompt_tokens/completion_tokens
     prompt_tokens: Option<i64>,
     completion_tokens: Option<i64>,
+    // Responses API uses input_tokens/output_tokens
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
     prompt_tokens_details: Option<PromptTokenDetails>,
+}
+
+impl OpenAIUsage {
+    fn effective_input(&self) -> i64 {
+        self.prompt_tokens.or(self.input_tokens).unwrap_or(0)
+    }
+    fn effective_output(&self) -> i64 {
+        self.completion_tokens.or(self.output_tokens).unwrap_or(0)
+    }
 }
 
 #[derive(Deserialize)]
