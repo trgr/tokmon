@@ -507,7 +507,7 @@ async fn log_usage(
         cached_tokens,
     );
 
-    if !state.quiet {
+    if std::env::var("TOKMON_VERBOSE").is_ok() {
         eprintln!(
             "\x1b[36mtokmon\x1b[0m {} \x1b[33m{}\x1b[0m {}in/{}out {} {:.0}ms",
             provider.as_str(),
