@@ -118,18 +118,23 @@ fn load_price_config() -> Option<PriceConfig> {
 }
 
 /// Try to find a price in the user config file.
+/// Uses longest matching pattern to avoid e.g. "gpt-4" matching before "gpt-4o-mini".
 fn lookup_user_price(model: &str) -> Option<(f64, f64, f64)> {
     let config = load_price_config()?;
-    // Try exact match first, then prefix match, then contains match
+    // Try exact match first
     if let Some(p) = config.models.get(model) {
         return Some((p.input, p.output, p.cached));
     }
+    // Find the longest matching pattern (prefix or contains)
+    let mut best: Option<(&str, &ModelPrice)> = None;
     for (pattern, price) in &config.models {
         if model.starts_with(pattern.as_str()) || model.contains(pattern.as_str()) {
-            return Some((price.input, price.output, price.cached));
+            if best.is_none() || pattern.len() > best.unwrap().0.len() {
+                best = Some((pattern.as_str(), price));
+            }
         }
     }
-    None
+    best.map(|(_, p)| (p.input, p.output, p.cached))
 }
 
 /// Token pricing per 1M tokens in USD.
