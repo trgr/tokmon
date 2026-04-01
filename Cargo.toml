@@ -1,0 +1,49 @@
+[package]
+name = "tokmon"
+version = "0.1.0"
+edition = "2024"
+description = "htop for your AI spend — track tokens, latency, and cost across LLM providers"
+license = "MIT"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP proxy + client
+axum = { version = "0.8", features = ["macros"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+hyper = { version = "1" }
+http = "1"
+tower = "0.5"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+dirs = "6"
+tabled = "0.17"
+futures-util = "0.3"
+bytes = "1"
+http-body-util = "0.1"
+tokio-stream = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
