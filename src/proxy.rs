@@ -27,6 +27,9 @@ struct ProxyState {
     /// Original API keys captured from the environment
     openai_api_key: Option<String>,
     anthropic_api_key: Option<String>,
+    deepseek_api_key: Option<String>,
+    mistral_api_key: Option<String>,
+    groq_api_key: Option<String>,
     /// Suppress all stderr output during the session (for TUI-wrapped apps)
     quiet: bool,
 }
@@ -34,9 +37,12 @@ struct ProxyState {
 pub async fn run_wrap(cmd: Vec<String>, label: Option<String>, quiet: bool) -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    // Capture original API keys and base URLs before we override them
+    // Capture original API keys before we override them
     let openai_key = std::env::var("OPENAI_API_KEY").ok();
     let anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok();
+    let deepseek_key = std::env::var("DEEPSEEK_API_KEY").ok();
+    let mistral_key = std::env::var("MISTRAL_API_KEY").ok();
+    let groq_key = std::env::var("GROQ_API_KEY").ok();
 
     let db = Database::open()?;
     db.create_session(&Session {
@@ -53,6 +59,9 @@ pub async fn run_wrap(cmd: Vec<String>, label: Option<String>, quiet: bool) -> R
         client: reqwest::Client::new(),
         openai_api_key: openai_key,
         anthropic_api_key: anthropic_key,
+        deepseek_api_key: deepseek_key,
+        mistral_api_key: mistral_key,
+        groq_api_key: groq_key,
         quiet,
     });
 
@@ -87,9 +96,12 @@ pub async fn run_wrap(cmd: Vec<String>, label: Option<String>, quiet: bool) -> R
     // Run the wrapped command with proxy env vars
     let status = tokio::process::Command::new(&cmd[0])
         .args(&cmd[1..])
-        .env("OPENAI_BASE_URL", format!("{}/openai", proxy_url))
-        .env("OPENAI_API_BASE", format!("{}/openai", proxy_url))
+        .env("OPENAI_BASE_URL", format!("{}/openai/v1", proxy_url))
+        .env("OPENAI_API_BASE", format!("{}/openai/v1", proxy_url))
         .env("ANTHROPIC_BASE_URL", format!("{}/anthropic", proxy_url))
+        .env("DEEPSEEK_BASE_URL", format!("{}/deepseek/v1", proxy_url))
+        .env("MISTRAL_BASE_URL", format!("{}/mistral/v1", proxy_url))
+        .env("GROQ_BASE_URL", format!("{}/groq/openai/v1", proxy_url))
         .env("TOKMON_SESSION", &session_id)
         .env("TOKMON_PROXY", &proxy_url)
         .stdin(Stdio::inherit())
@@ -167,23 +179,22 @@ async fn proxy_handler(
 
     // Determine target provider from the path prefix
     let path = req.uri().path();
-    let (provider, target_host, api_path) = if path.starts_with("/openai") {
-        let api_path = path.strip_prefix("/openai").unwrap_or("/");
-        (
-            Provider::OpenAI,
-            "https://api.openai.com",
-            api_path.to_string(),
-        )
-    } else if path.starts_with("/anthropic") {
-        let api_path = path.strip_prefix("/anthropic").unwrap_or("/");
-        (
-            Provider::Anthropic,
-            "https://api.anthropic.com",
-            api_path.to_string(),
-        )
-    } else {
-        return Err(StatusCode::BAD_GATEWAY);
-    };
+    let routes: &[(&str, Provider, &str)] = &[
+        ("/openai", Provider::OpenAI, "https://api.openai.com"),
+        ("/anthropic", Provider::Anthropic, "https://api.anthropic.com"),
+        ("/deepseek", Provider::DeepSeek, "https://api.deepseek.com"),
+        ("/mistral", Provider::Mistral, "https://api.mistral.ai"),
+        ("/groq", Provider::Groq, "https://api.groq.com/openai"),
+    ];
+    let (provider, target_host, api_path) = routes
+        .iter()
+        .find_map(|(prefix, prov, host)| {
+            path.starts_with(prefix).then(|| {
+                let api_path = path.strip_prefix(prefix).unwrap_or("/").to_string();
+                (*prov, *host, api_path)
+            })
+        })
+        .ok_or(StatusCode::BAD_GATEWAY)?;
 
     let method = req.method().clone();
     let headers = req.headers().clone();
@@ -229,19 +240,22 @@ async fn proxy_handler(
 
         // Inject the real API key
         if name_str == "authorization" {
-            if provider == Provider::OpenAI {
-                if let Some(ref key) = state.openai_api_key {
-                    forward = forward.header("authorization", format!("Bearer {}", key));
-                    continue;
-                }
+            let key = match provider {
+                Provider::OpenAI => state.openai_api_key.as_deref(),
+                Provider::DeepSeek => state.deepseek_api_key.as_deref(),
+                Provider::Mistral => state.mistral_api_key.as_deref(),
+                Provider::Groq => state.groq_api_key.as_deref(),
+                Provider::Anthropic => None,
+            };
+            if let Some(key) = key {
+                forward = forward.header("authorization", format!("Bearer {}", key));
+                continue;
             }
         }
-        if name_str == "x-api-key" {
-            if provider == Provider::Anthropic {
-                if let Some(ref key) = state.anthropic_api_key {
-                    forward = forward.header("x-api-key", key.as_str());
-                    continue;
-                }
+        if name_str == "x-api-key" && provider == Provider::Anthropic {
+            if let Some(ref key) = state.anthropic_api_key {
+                forward = forward.header("x-api-key", key.as_str());
+                continue;
             }
         }
 
@@ -253,8 +267,8 @@ async fn proxy_handler(
     // Without this, the server is free to compress and our parsers silently fail.
     forward = forward.header("accept-encoding", "identity");
 
-    // For OpenAI streaming, inject stream_options.include_usage
-    if is_stream && provider == Provider::OpenAI {
+    // For OpenAI-compatible streaming, inject stream_options.include_usage
+    if is_stream && provider.is_openai_compatible() {
         if let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
             if json.get("stream_options").is_none() {
                 json["stream_options"] = serde_json::json!({"include_usage": true});
@@ -312,9 +326,10 @@ async fn handle_non_streaming_response(
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
     let latency = start.elapsed().as_millis() as i64;
 
-    let mut usage = match provider {
-        Provider::OpenAI => providers::openai::parse_response(&resp_bytes),
-        Provider::Anthropic => providers::anthropic::parse_response(&resp_bytes),
+    let mut usage = if provider.is_openai_compatible() {
+        providers::openai::parse_response(&resp_bytes)
+    } else {
+        providers::anthropic::parse_response(&resp_bytes)
     };
 
     // Fallback: try text extraction if JSON parsing failed
@@ -329,9 +344,10 @@ async fn handle_non_streaming_response(
                     providers::strip_sse_data_prefix(line).map(|data| data.to_string())
                 })
                 .collect();
-            usage = match provider {
-                Provider::OpenAI => providers::openai::parse_stream_chunks(&chunks),
-                Provider::Anthropic => providers::anthropic::parse_stream_chunks(&chunks),
+            usage = if provider.is_openai_compatible() {
+                providers::openai::parse_stream_chunks(&chunks)
+            } else {
+                providers::anthropic::parse_stream_chunks(&chunks)
             };
         }
 
@@ -432,9 +448,10 @@ async fn handle_streaming_response(
             }
         }
 
-        let mut usage = match provider {
-            Provider::OpenAI => providers::openai::parse_stream_chunks(&chunks),
-            Provider::Anthropic => providers::anthropic::parse_stream_chunks(&chunks),
+        let mut usage = if provider.is_openai_compatible() {
+            providers::openai::parse_stream_chunks(&chunks)
+        } else {
+            providers::anthropic::parse_stream_chunks(&chunks)
         };
 
         // Fallback: if structured parsing failed, try text extraction

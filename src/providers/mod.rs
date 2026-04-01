@@ -79,6 +79,9 @@ fn extract_string(text: &str, key: &str) -> Option<String> {
 pub enum Provider {
     OpenAI,
     Anthropic,
+    DeepSeek,
+    Mistral,
+    Groq,
 }
 
 impl Provider {
@@ -86,7 +89,18 @@ impl Provider {
         match self {
             Provider::OpenAI => "openai",
             Provider::Anthropic => "anthropic",
+            Provider::DeepSeek => "deepseek",
+            Provider::Mistral => "mistral",
+            Provider::Groq => "groq",
         }
+    }
+
+    /// Whether this provider uses the OpenAI-compatible API format.
+    pub fn is_openai_compatible(&self) -> bool {
+        matches!(
+            self,
+            Provider::OpenAI | Provider::DeepSeek | Provider::Mistral | Provider::Groq
+        )
     }
 }
 
